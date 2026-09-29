@@ -1052,7 +1052,7 @@ renderer.setAnimationLoop(() => {
   // During a transform the frames make a quarter turn in opposite directions and their colours race
   let turn = 0, pulse = 0;
   if (morph) {
-    const k = clamp((t - morph.start) / (morph.end - morph.start), 0, 1);
+    const k = clamp((t - morph.start) / morph.end, 0, 1);   // morph.end is a duration, not a timestamp
     turn = easeInOut(k);
     pulse = Math.sin(Math.PI * k);
   }
