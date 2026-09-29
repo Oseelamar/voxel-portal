@@ -192,7 +192,9 @@
     <button class="transform" id="transform" type="button" disabled>Transform</button>
   </main>
   <section class="stage" aria-label="Voxel portal">
-    <iframe id="portal" src="portal.html" title="Voxel portal"></iframe>
+    <!-- Bump ?v= whenever portal.html changes: GitHub Pages lets browsers cache it for 10 min,
+         and iframes often skip re-checking on refresh, so a new version tag forces a fresh copy -->
+    <iframe id="portal" src="portal.html?v=3" title="Voxel portal"></iframe>
   </section>
 
   <script>
