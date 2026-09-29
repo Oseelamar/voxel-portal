@@ -124,8 +124,8 @@
        Tiles scroll sideways inside the sheet, so the transform stays in view the whole time. */
     @media (max-width: 760px) {
       /* Compact sheet so the portal gets ~70% of the screen:
-         16 top + 36 heading + 10 + 72 tiles + 14 + 48 button + 16 bottom (+ home-indicator inset) */
-      :root { --sheet: calc(212px + env(safe-area-inset-bottom)); }
+         16 top + 36 heading + 10 + 72 tiles + 28 + 48 button + 16 bottom (+ home-indicator inset) */
+      :root { --sheet: calc(226px + env(safe-area-inset-bottom)); }
       html, body { height: 100%; overflow: hidden; }
       body { display: block; }
       .stage {
@@ -177,7 +177,7 @@
       .transform {
         align-self: stretch;
         width: auto;
-        margin: 14px 22px 0;
+        margin: 28px 22px 0;   /* breathing room between the tiles and the button */
         padding: 10px 40px;
         font-size: 22px;
         line-height: 28px;
