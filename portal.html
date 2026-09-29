@@ -53,7 +53,7 @@ function resize() {
   renderer.setSize(w, h);
   const aspect = w / h;
   // Portrait screens (phones) crop the empty margins so the scene fills the width
-  const viewH = 27, viewW = aspect < 1 ? 21 : 30;
+  const viewH = 27, viewW = aspect < 1 ? 19 : 30;
   let halfH = viewH / 2, halfW = halfH * aspect;
   if (halfW < viewW / 2) { halfW = viewW / 2; halfH = halfW / aspect; }
   Object.assign(camera, { left: -halfW, right: halfW, top: halfH, bottom: -halfH });

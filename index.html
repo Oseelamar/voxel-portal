@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Choose an Object</title>
   <!-- Start fetching the 3D library straight away, in parallel with the page; the portal reuses it -->
   <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
@@ -123,12 +123,15 @@
     /* Phones: the portal fills the top, the picker lives in a bottom sheet (Figma 79:82, 393×852).
        Tiles scroll sideways inside the sheet, so the transform stays in view the whole time. */
     @media (max-width: 760px) {
+      /* Compact sheet so the portal gets ~70% of the screen:
+         16 top + 36 heading + 10 + 72 tiles + 14 + 48 button + 16 bottom (+ home-indicator inset) */
+      :root { --sheet: calc(212px + env(safe-area-inset-bottom)); }
       html, body { height: 100%; overflow: hidden; }
       body { display: block; }
       .stage {
         position: fixed;
         inset: 0 0 auto 0;
-        height: calc(100dvh - 318px);   /* runs 24px under the sheet's rounded corners */
+        height: calc(100dvh - var(--sheet) + 24px);   /* runs under the sheet's rounded corners */
       }
       .panel {
         position: fixed;
@@ -136,17 +139,17 @@
         right: 0;
         bottom: 0;
         z-index: 1;
-        height: 342px;
-        padding: 16px 0 0;
+        height: var(--sheet);
+        padding: 16px 0 calc(16px + env(safe-area-inset-bottom));
         background: #fff;
         border-radius: 24px 24px 0 0;
         box-shadow: 0 -8px 32px rgba(23, 23, 21, .06);
       }
       h1 {
-        margin: 0 0 13px 20px;
-        font-size: 32px;
-        line-height: 64px;
-        letter-spacing: -0.32px;
+        margin: 0 0 10px 22px;
+        font-size: 28px;
+        line-height: 36px;
+        letter-spacing: -0.28px;
       }
       .any { display: none; }
       .an { display: inline; }
@@ -174,7 +177,10 @@
       .transform {
         align-self: stretch;
         width: auto;
-        margin: 34px 22px 0;
+        margin: 14px 22px 0;
+        padding: 10px 40px;
+        font-size: 22px;
+        line-height: 28px;
       }
     }
   </style>
