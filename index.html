@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Choose an Object</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Patrick+Hand&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #f9f2f0;
+      --tile: #efe8e6;
+      --tile-hover: #e8e0de;
+      --ink: #171715;
+      --green: #03b059;
+      --inactive: #dcd4d2;
+      --inactive-ink: #9c9492;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: var(--bg); }
+    body {
+      font-family: 'Patrick Hand', cursive;
+      color: var(--ink);
+      display: grid;
+      grid-template-columns: 644px 1fr;
+      min-height: 100vh;
+    }
+
+    /* Left panel: matches the Figma frame (100px inset, heading centred at y=140, grid at y=196) */
+    .panel {
+      padding: 108px 0 64px 100px;
+      display: flex;
+      flex-direction: column;
+    }
+    h1 {
+      margin: 0 0 24px;
+      font-weight: 400;
+      font-size: 48px;
+      line-height: 64px;
+      letter-spacing: -0.48px;
+      white-space: nowrap;
+    }
+    .objects {
+      display: grid;
+      grid-template-columns: repeat(5, 96px);
+      gap: 12px;
+      width: 544px;
+    }
+    .tile {
+      width: 96px;
+      height: 96px;
+      border: 0;
+      border-radius: 12px;
+      background: var(--tile);
+      cursor: pointer;
+      transition: background-color .15s ease, box-shadow .15s ease;
+    }
+    .tile {
+      position: relative;
+      display: grid;
+      place-items: center;
+      padding: 0;
+      overflow: hidden;
+    }
+    .tile img { position: absolute; display: block; object-fit: cover; pointer-events: none; transition: transform .2s ease; }
+    .tile.empty { cursor: default; }
+    button.tile:hover { background: var(--tile-hover); }
+    button.tile:hover img { transform: scale(1.06); }
+    .tile[aria-pressed="true"] { box-shadow: inset 0 0 0 2px var(--ink); }
+    .tile:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
+
+    .transform {
+      align-self: flex-start;
+      margin: 40px 0 0 136px;   /* centres the 272px button under the 544px grid */
+      width: 272px;
+      padding: 12px 40px;
+      border: 0;
+      border-radius: 41px;
+      background: var(--green);
+      color: #fff;
+      font: inherit;
+      font-size: 24px;
+      line-height: 32px;
+      letter-spacing: -0.24px;
+      cursor: pointer;
+      transition: background-color .25s ease, color .25s ease, filter .15s ease, transform .15s ease;
+    }
+    .transform:not(:disabled):hover { filter: brightness(1.06); }
+    .transform:not(:disabled):active { transform: scale(.98); }
+    .transform:disabled { background: var(--inactive); color: var(--inactive-ink); cursor: not-allowed; }
+    .transform.busy { background: var(--green); color: #fff; cursor: progress; opacity: .85; }
+
+    /* Right side: the portal fills the blank space */
+    .stage {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      min-width: 0;
+    }
+    .stage iframe {
+      display: block;
+      width: 100%;
+      height: 100%;
+      border: 0;
+    }
+
+    .an { display: none; }
+
+    @media (min-width: 761px) and (max-width: 1080px) {
+      body { grid-template-columns: 1fr; }
+      .panel { padding: 56px 16px 24px; align-items: center; }
+      .objects { width: min(544px, 100%); grid-template-columns: repeat(5, 1fr); }
+      .tile { width: 100%; height: auto; aspect-ratio: 1; }
+      .transform { align-self: center; margin: 32px 0 0; max-width: 100%; }
+      h1 { font-size: 40px; line-height: 52px; }
+      .stage { position: static; height: 80vh; }
+    }
+
+    /* Phones: the portal fills the top, the picker lives in a bottom sheet (Figma 79:82, 393×852).
+       Tiles scroll sideways inside the sheet, so the transform stays in view the whole time. */
+    @media (max-width: 760px) {
+      html, body { height: 100%; overflow: hidden; }
+      body { display: block; }
+      .stage {
+        position: fixed;
+        inset: 0 0 auto 0;
+        height: calc(100dvh - 318px);   /* runs 24px under the sheet's rounded corners */
+      }
+      .panel {
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 1;
+        height: 342px;
+        padding: 16px 0 0;
+        background: #fff;
+        border-radius: 24px 24px 0 0;
+        box-shadow: 0 -8px 32px rgba(23, 23, 21, .06);
+      }
+      h1 {
+        margin: 0 0 13px 20px;
+        font-size: 32px;
+        line-height: 64px;
+        letter-spacing: -0.32px;
+      }
+      .any { display: none; }
+      .an { display: inline; }
+      .objects {
+        display: flex;
+        gap: 8px;
+        width: auto;
+        padding: 0 22px;
+        overflow-x: auto;
+        overscroll-behavior-x: contain;
+        scroll-padding: 0 22px;
+        scroll-snap-type: x proximity;
+        scrollbar-width: none;
+      }
+      .objects::-webkit-scrollbar { display: none; }
+      .tile {
+        flex: 0 0 72px;
+        width: 72px;
+        height: 72px;
+        border-radius: 9px;
+        background: #e7e6e5;
+        scroll-snap-align: start;
+      }
+      button.tile:hover { background: #dedcdb; }
+      .transform {
+        align-self: stretch;
+        width: auto;
+        margin: 34px 22px 0;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="panel">
+    <h1>Choose <span class="any">any</span><span class="an">an</span> object</h1>
+    <div class="objects" id="objects" role="group" aria-label="Objects"></div>
+    <button class="transform" id="transform" type="button" disabled>Transform</button>
+  </main>
+  <section class="stage" aria-label="Voxel portal">
+    <iframe id="portal" src="portal.html" title="Voxel portal"></iframe>
+  </section>
+
+  <script>
+    // Image sizes and positions match the Figma tiles (px within the 96px tile).
+    // Centred by default; dx/dy nudge from centre; left/top pin an edge like the design does.
+    const OBJECTS = [
+      { id: 'plane', label: 'Plane', w: 72.648, h: 60.54, dx: 0.68 },
+      { id: 'dog', label: 'Dog', w: 75.589, h: 75.589 },
+      { id: 'football', label: 'Football', w: 64.003, h: 64.003 },
+      { id: 'globe', label: 'Globe', w: 72, h: 72 },
+      { id: 'soccer', label: 'Soccer ball', w: 81.843, h: 68.202 },
+      { id: 'tennis', label: 'Tennis ball', w: 72, h: 72 },
+      { id: 'rocket', label: 'Rocket', w: 72, h: 72 },
+      { id: 'car', label: 'Car', w: 77.457, h: 51.638, dy: -1.22 },
+      { id: 'tree', label: 'Tree', w: 72, h: 72 },
+      { id: 'house', label: 'House', w: 77.371, h: 61.919 },
+      { id: 'cactus', label: 'Cactus', w: 72, h: 72 },
+      { id: 'bicycle', label: 'Bicycle', w: 76, h: 76 },
+      { id: 'basketball', label: 'Basketball', w: 72, h: 72 },
+      { id: 'controller', label: 'Game controller', w: 98.153, h: 65.436 },
+      { id: 'bus', label: 'Bus', w: 85.707, h: 57.138, top: 20.64 },
+      { id: 'sun', label: 'Sun', w: 96.646, h: 77.345 },
+      { id: 'guitar', label: 'Guitar', w: 111.485, h: 74.323 },
+      { id: 'train', label: 'Train', w: 143.166, h: 71.583, left: -53.47, top: 15.05 },
+      { id: 'moon', label: 'Moon', w: 92.604, h: 74.109 },
+      { id: 'sunflower', label: 'Sunflower', w: 121.907, h: 81.271 },
+      { id: 'cloud', label: 'Cloud', w: 94.938, h: 63.292 },
+      { id: 'camera', label: 'Camera', w: 106.633, h: 71.089 },
+      { id: 'ship', label: 'Ship', w: 91.792, h: 61.194, left: 2.1 },
+      { id: 'star', label: 'Star', w: 124.261, h: 82.841 },
+      { id: 'balloon', label: 'Balloon', w: 129.105, h: 86.07, left: -16.55 },
+    ];
+    const objects = document.getElementById('objects');
+    const button = document.getElementById('transform');
+    const portal = document.getElementById('portal');
+    let selected = null;
+    let busy = false;
+
+    function render() {
+      objects.querySelectorAll('button.tile').forEach((t) => {
+        t.setAttribute('aria-pressed', String(t.dataset.id === selected));
+      });
+      button.disabled = !selected || busy;
+      button.classList.toggle('busy', busy);
+      button.textContent = busy ? 'Transforming…' : 'Transform';
+    }
+
+    for (let i = 0; i < 25; i++) {
+      const obj = OBJECTS[i];
+      if (!obj) {
+        const empty = document.createElement('div');
+        empty.className = 'tile empty';
+        objects.appendChild(empty);
+        continue;
+      }
+      const tile = document.createElement('button');
+      tile.className = 'tile';
+      tile.type = 'button';
+      tile.dataset.id = obj.id;
+      tile.setAttribute('aria-label', obj.label);
+      const img = document.createElement('img');
+      img.src = `assets/${obj.id}.png`;
+      img.alt = '';
+      // Percentages of the 96px tile, so the art scales with the tile on small screens
+      const left = obj.left ?? 48 - obj.w / 2 + (obj.dx ?? 0);
+      const top = obj.top ?? 48 - obj.h / 2 + (obj.dy ?? 0);
+      const pct = (v) => `${(v / 96) * 100}%`;
+      Object.assign(img.style, { left: pct(left), top: pct(top), width: pct(obj.w), height: pct(obj.h) });
+      tile.appendChild(img);
+      tile.addEventListener('click', () => {
+        if (busy) return;
+        selected = selected === obj.id ? null : obj.id;
+        render();
+      });
+      objects.appendChild(tile);
+    }
+
+    button.addEventListener('click', () => {
+      if (!selected || busy) return;
+      busy = true;
+      render();
+      portal.contentWindow.postMessage({ type: 'transform', shape: selected }, location.origin);
+    });
+
+    window.addEventListener('message', (e) => {
+      if (e.origin !== location.origin || e.data?.type !== 'transform-done') return;
+      // The object has been built, so nothing is selected any more and the button goes back to grey
+      busy = false;
+      selected = null;
+      render();
+    });
+
+    render();
+  </script>
+</body>
+</html>

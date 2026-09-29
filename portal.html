@@ -1,0 +1,1078 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Voxel Portal</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #f9f2f0; overflow: hidden; }
+    canvas { display: block; width: 100%; height: 100%; }
+  </style>
+  <script type="importmap">
+    { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js" } }
+  </script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+
+// ---- Scene dimensions (world units = grid cells) ----
+const W = 14;            // wall length along x and z
+const H = 14;            // wall height
+const FRAME = 8.4;       // outer side of the floating square frames
+const FRAME_BAND = 0.55; // width of the frame's ring
+const FRAME_THICK = 0.32;
+const TOP_Y = H + 2.2;
+const BOTTOM_Y = -1.6;
+const WALL_Y = -2;       // drops the grid so it sits visually midway between the frames
+const ELEVATION = THREE.MathUtils.degToRad(21);
+const BG = new THREE.Color('#f9f2f0');
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setClearColor(BG, 1);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const center = new THREE.Vector3(W / 2, H / 2 + 0.3, W / 2);
+
+const camera = new THREE.OrthographicCamera();
+const dir = new THREE.Vector3(
+  Math.cos(ELEVATION) * Math.SQRT1_2,
+  Math.sin(ELEVATION),
+  Math.cos(ELEVATION) * Math.SQRT1_2
+);
+camera.position.copy(center).addScaledVector(dir, 60);
+camera.lookAt(center);
+camera.near = 0.1;
+camera.far = 200;
+
+function resize() {
+  const w = window.innerWidth, h = window.innerHeight;
+  renderer.setSize(w, h);
+  const aspect = w / h;
+  // Portrait screens (phones) crop the empty margins so the scene fills the width
+  const viewH = 27, viewW = aspect < 1 ? 21 : 30;
+  let halfH = viewH / 2, halfW = halfH * aspect;
+  if (halfW < viewW / 2) { halfW = viewW / 2; halfH = halfW / aspect; }
+  Object.assign(camera, { left: -halfW, right: halfW, top: halfH, bottom: -halfH });
+  camera.updateProjectionMatrix();
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ---- Grid walls: procedural, antialiased lines with a chromatic fringe and soft fade ----
+const gridMaterial = new THREE.ShaderMaterial({
+  transparent: true,
+  depthWrite: false,
+  side: THREE.DoubleSide,
+  uniforms: { uSize: { value: new THREE.Vector2(W, H) } },
+  vertexShader: /* glsl */`
+    varying vec2 vCell;
+    uniform vec2 uSize;
+    void main() {
+      vCell = uv * uSize;               // x: distance from the corner, y: height
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }`,
+  fragmentShader: /* glsl */`
+    varying vec2 vCell;
+    uniform vec2 uSize;
+    float grid(vec2 p) {
+      vec2 d = abs(fract(p - 0.5) - 0.5) / fwidth(p);
+      return 1.0 - min(min(d.x, d.y), 1.0);
+    }
+    void main() {
+      float off = 0.035;
+      float gR = grid(vCell + vec2(off, off * 0.5));
+      float g  = grid(vCell);
+      float gB = grid(vCell - vec2(off, off * 0.5));
+      vec3 orange = vec3(0.96, 0.66, 0.40);  // main line colour, soft take on #FFA94C
+      vec3 pink   = vec3(1.00, 0.73, 0.97);  // #FFBBF7 fringe, kept subtle
+      float a = max(g, max(gR, gB) * 0.35);
+      vec3 col = (gR * pink + g * orange + gB * orange) / max(gR + g + gB, 1e-4);
+
+      // Fade toward the far edges and the bottom, like the reference
+      float fadeEdge   = smoothstep(uSize.x, uSize.x * 0.72, vCell.x);
+      float fadeBottom = smoothstep(0.0, uSize.y * 0.38, vCell.y);
+      float fadeTop    = smoothstep(uSize.y, uSize.y * 0.94, vCell.y);
+      a *= fadeEdge * fadeBottom * fadeTop * 0.6;
+      if (a < 0.003) discard;
+      gl_FragColor = vec4(col, a);
+    }`,
+});
+
+// Left wall lies in the YZ plane (x = 0), right wall in the XY plane (z = 0).
+// Each plane's uv.x runs from the shared corner outward.
+function makeWall(isLeft) {
+  const geo = new THREE.PlaneGeometry(W, H);
+  const mesh = new THREE.Mesh(geo, gridMaterial);
+  if (isLeft) {
+    mesh.rotation.y = Math.PI / 2;        // plane faces +x
+    mesh.position.set(0, H / 2 + WALL_Y, W / 2);
+    // After rotation, uv.x=0 sits at z=+W; flip so it starts at the corner (z=0)
+    const uv = geo.attributes.uv;
+    for (let i = 0; i < uv.count; i++) uv.setX(i, 1 - uv.getX(i));
+  } else {
+    mesh.position.set(W / 2, H / 2 + WALL_Y, 0);
+  }
+  return mesh;
+}
+scene.add(makeWall(true), makeWall(false));
+
+// ---- Floating square frames with an iridescent gradient ----
+function makeFrameGeometry() {
+  const o = FRAME / 2, i = o - FRAME_BAND;
+  const shape = new THREE.Shape([
+    new THREE.Vector2(-o, -o), new THREE.Vector2(o, -o),
+    new THREE.Vector2(o, o), new THREE.Vector2(-o, o),
+  ]);
+  shape.holes.push(new THREE.Path([
+    new THREE.Vector2(-i, -i), new THREE.Vector2(-i, i),
+    new THREE.Vector2(i, i), new THREE.Vector2(i, -i),
+  ]));
+  const geo = new THREE.ExtrudeGeometry(shape, { depth: FRAME_THICK, bevelEnabled: false });
+  geo.rotateX(-Math.PI / 2);           // lay it flat in the XZ plane
+  geo.translate(0, -FRAME_THICK / 2, 0);
+  return geo;
+}
+
+const frameMaterial = new THREE.ShaderMaterial({
+  uniforms: {
+    uTime: { value: 0 },
+    uPhase: { value: 0 },
+    uDrift: { value: 1 },
+    uC0: { value: new THREE.Color() },
+    uC1: { value: new THREE.Color() },
+    uC2: { value: new THREE.Color() },
+    uSeed: { value: 0 },
+  },
+  vertexShader: /* glsl */`
+    varying vec3 vLocal;
+    varying vec3 vNormalW;
+    void main() {
+      vLocal = position;
+      vNormalW = normalize(mat3(modelMatrix) * normal);
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }`,
+  fragmentShader: /* glsl */`
+    varying vec3 vLocal;
+    varying vec3 vNormalW;
+    uniform float uTime;
+    uniform float uPhase;
+    uniform float uDrift;
+    uniform vec3 uC0, uC1, uC2;
+    uniform float uSeed;
+    vec3 palette(float t) {
+      t = fract(t) * 3.0;
+      if (t < 1.0) return mix(uC0, uC1, smoothstep(0.0, 1.0, t));
+      if (t < 2.0) return mix(uC1, uC2, smoothstep(0.0, 1.0, t - 1.0));
+      return mix(uC2, uC0, smoothstep(0.0, 1.0, t - 2.0));
+    }
+    float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7)) + uSeed) * 43758.5453); }
+    float noise(vec2 p) {
+      vec2 i = floor(p), f = fract(p);
+      vec2 u = f * f * (3.0 - 2.0 * f);
+      return mix(mix(hash(i), hash(i + vec2(1, 0)), u.x),
+                 mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), u.x), u.y);
+    }
+    float fbm(vec2 p) {
+      float v = 0.0, a = 0.5;
+      for (int i = 0; i < 4; i++) { v += a * noise(p); p *= 2.1; a *= 0.5; }
+      return v;
+    }
+    void main() {
+      float ang = atan(vLocal.z, vLocal.x) / 6.28318;
+      vec3 n = normalize(vNormalW);
+      float isTop = step(0.5, abs(n.y));
+      // Sides pick up a shifted hue so the rim reads as a different colour than the face
+      // Uneven, patchy blend: warp the gradient with noise so colours bleed in blotches
+      vec2 p = vLocal.xz + vLocal.y * 3.0;
+      float warp = fbm(p * 0.9 + uTime * 0.05) - 0.5;
+      float t = ang + uPhase + uTime * 0.03 * uDrift + (1.0 - isTop) * 0.2 + warp * 0.35;
+      vec3 base = palette(t);
+      // Blocky mesh cells: snap to small tiles and nudge each tile toward a neighbouring hue
+      vec2 cell = floor(p * 5.0);
+      float jitter = hash(cell) - 0.5;
+      base = mix(base, palette(t + jitter * 0.25), 0.45);
+      // Sketchy strokes running along the ring, plus fine grain
+      float along = abs(vLocal.x) > abs(vLocal.z) ? vLocal.z : vLocal.x;
+      float stroke = noise(vec2(along * 1.5, (vLocal.x + vLocal.z) * 18.0));
+      base *= 0.9 + 0.2 * stroke;
+      base += (hash(gl_FragCoord.xy) - 0.5) * 0.09;
+      vec3 light = normalize(vec3(0.4, 1.0, 0.7));
+      float diff = 0.78 + 0.22 * max(dot(n, light), 0.0);
+      vec3 col = mix(base * diff, base, isTop);
+      gl_FragColor = vec4(col, 1.0);
+    }`,
+});
+
+const frameGeo = makeFrameGeometry();
+const topFrame = new THREE.Mesh(frameGeo, frameMaterial.clone());
+const bottomFrame = new THREE.Mesh(frameGeo, frameMaterial.clone());
+
+// Each frame gets its own random ordering, starting point and drift direction of the gradient.
+const FRAME_COLORS = ['#70E5FF', '#7593FF', '#FFBBF7'];
+function randomizeGradient(mesh) {
+  const order = [...FRAME_COLORS].sort(() => Math.random() - 0.5);
+  const u = mesh.material.uniforms;
+  [u.uC0, u.uC1, u.uC2].forEach((c, i) => c.value.set(order[i]));
+  u.uSeed.value = Math.random() * 100;
+  u.uPhase.value = Math.random();
+  u.uDrift.value = Math.random() < 0.5 ? -1 : 1;
+}
+randomizeGradient(topFrame);
+randomizeGradient(bottomFrame);
+topFrame.position.set(W / 2, TOP_Y, W / 2);
+bottomFrame.position.set(W / 2, BOTTOM_Y, W / 2);
+scene.add(topFrame, bottomFrame);
+
+// ---- Voxels: a loose blob that trails the mouse, and can rebuild itself into objects ----
+const VOXEL_COLORS = [
+  ['#7593FF', 0.27], // periwinkle
+  ['#FFBBF7', 0.25], // pink
+  ['#70E5FF', 0.20], // cyan
+  ['#FFD66B', 0.17], // butter yellow
+  ['#23295C', 0.11], // deep navy, for contrast
+];
+const STEP = 0.78;       // spacing between voxel centres
+const CUBE = 0.74;       // cube size (leaves hairline seams)
+const BLOB_CENTER = new THREE.Vector3(W / 2, (TOP_Y + BOTTOM_Y) / 2, W / 2);
+const Y_AXIS = new THREE.Vector3(0, 1, 0);
+
+const clamp = (v, a, b) => Math.min(Math.max(v, a), b);
+const easeInOut = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+const smooth = (a, b, t) => { const k = clamp((t - a) / (b - a), 0, 1); return k * k * (3 - 2 * k); };
+
+function pickColor() {
+  let r = Math.random();
+  for (const [hex, w] of VOXEL_COLORS) { if ((r -= w) <= 0) return hex; }
+  return VOXEL_COLORS[0][0];
+}
+
+// A few overlapping lumps give an organic, shapeless mass; edge cells are thinned out.
+function buildBlob() {
+  const lumps = [{ c: new THREE.Vector3(), r: 3.0 }];
+  for (let i = 0; i < 5; i++) {
+    const c = new THREE.Vector3().randomDirection().multiplyScalar(1.7 + Math.random() * 1.0);
+    lumps.push({ c, r: 1.3 + Math.random() * 0.9 });
+  }
+  const cells = [];
+  const n = 7;
+  for (let x = -n; x <= n; x++) for (let y = -n; y <= n; y++) for (let z = -n; z <= n; z++) {
+    const p = new THREE.Vector3(x, y, z).multiplyScalar(STEP);
+    let inside = 0;
+    for (const l of lumps) inside = Math.max(inside, 1 - p.distanceTo(l.c) / l.r);
+    if (inside <= 0) continue;
+    if (inside < 0.3 && Math.random() < 0.5) continue;     // ragged, scattered edge
+    cells.push({ p, color: pickColor() });
+  }
+  return cells;
+}
+
+// ---- Object models: sample(x, y, z) on integer cells returns a colour or null ----
+// Local axes: +x is the object's front (nose/head), +y up, +z the side that faces the viewer.
+function segDist(x, y, z, ax, ay, az, bx, by, bz) {
+  const abx = bx - ax, aby = by - ay, abz = bz - az;
+  const t = clamp(((x - ax) * abx + (y - ay) * aby + (z - az) * abz) / (abx * abx + aby * aby + abz * abz), 0, 1);
+  return Math.hypot(x - ax - abx * t, y - ay - aby * t, z - az - abz * t);
+}
+
+function plane(x, y, z) {
+  const BLUE = '#2E6A9A', CREAM = '#F5E6D3', BROWN = '#5E3524';
+  const az = Math.abs(z);
+  // Fuselage: round nose, tail sweeping up and narrowing
+  const cy = x < -3 ? (-3 - x) * 0.4 : 0;
+  let r = 2.1;
+  if (x > 4) r = 2.1 * Math.sqrt(Math.max(0, 1 - ((x - 4) / 2.6) ** 2));
+  if (x < -3) r = 2.1 - (-3 - x) * 0.38;
+  if (x >= -7 && (y - cy) ** 2 + z * z <= r * r) {
+    if (x >= 3.5 && y - cy >= 0.4) return BLUE;                                   // cockpit
+    if (x >= -3 && x <= 2 && x % 2 === 0 && y === 0 && az >= r - 1.2) return BROWN; // windows
+    return CREAM;
+  }
+  // Main wings, swept back and tapering to the tips
+  if (y === -1 && az >= 1 && az <= 7.5) {
+    const lead = 1.8 - (az - 1) * 0.55, chord = 3.4 - (az - 1) * 0.3;
+    if (x <= lead && x >= lead - chord) return BLUE;
+  }
+  // Engines hanging under the wings
+  if (x >= -0.5 && x <= 2.5 && (y + 2.3) ** 2 + (az - 3.5) ** 2 <= 1.25) {
+    if (x >= 2) return (y + 2.3) ** 2 + (az - 3.5) ** 2 <= 0.3 ? BROWN : CREAM;
+    return BLUE;
+  }
+  // Tail: horizontal stabilisers and a striped fin
+  if (y === 2 && az >= 1 && az <= 3.6 && x >= -7.2 && x <= -4.6 - (az - 1) * 0.5) return BLUE;
+  if (az === 0 && y >= 2 && y <= 6) {
+    const front = -4 - (y - 2) * 0.6;
+    if (x <= front && x >= front - 2.2) return y === 4 ? CREAM : BLUE;
+  }
+  return null;
+}
+
+function dog(x, y, z) {
+  const CREAM = '#F5E4CF', BROWN = '#9A4A25', EAR = '#7E3A1E', TAN = '#E6C9A3', DARK = '#4E2718';
+  const az = Math.abs(z), side = Math.sign(z) || 1;
+  const ell = (cx, cy, cz, rx, ry, rz) => ((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2 + ((z - cz) / rz) ** 2 <= 1;
+  if (ell(7.3, 3.0, 0, 0.9, 0.8, 0.9)) return DARK;                               // nose
+  if (ell(5, 4, side * 2, 0.5, 0.5, 0.5)) return DARK;                            // eyes
+  if (az >= 1 && ell(3.1, 1.6, side * 2.1, 1.2, 2.2, 0.75)) return EAR;           // floppy ears
+  if (ell(5.9, 2.3, 0, 1.8, 1.2, 1.3)) return CREAM;                              // muzzle
+  if (ell(4.0, 3.3, 0, 2.1, 2.0, 2.0)) {                                          // head with a pale blaze
+    if (x >= 4.8 && y <= 3.6) return CREAM;
+    if (az <= 0.5 && y >= 4.5 && x >= 4) return CREAM;
+    return BROWN;
+  }
+  if (segDist(x, y, z, 1.5, 0.8, 0, 3.4, 2.4, 0) <= 1.7) return y > 1.6 && x < 3 ? BROWN : CREAM; // neck
+  if (ell(-0.6, 0, 0, 4.4, 2.3, 2.1)) {                                           // body with saddle patch
+    if (y >= 0.2 && x > -3.8 && x < 1.6) return BROWN;
+    if (x <= -3.2 && y >= -0.6) return BROWN;
+    return CREAM;
+  }
+  for (const [lx, lz] of [[2.4, 1.2], [2.4, -1.2], [-3.1, 1.2], [-3.1, -1.2]]) {  // legs, far pair shaded
+    if (segDist(x, y, z, lx, -1, lz, lx, -5, lz) <= 0.95) return lz < 0 ? TAN : CREAM;
+  }
+  if (segDist(x, y, z, -4.4, 1.2, 0, -5.6, 5.2, 0) <= 0.8) return y >= 4 ? CREAM : BROWN; // tail
+  return null;
+}
+
+// Modelled level along x; the tilt comes from its pose so the laces stay crisp
+function football(x, y, z) {
+  const BROWN = '#8E3A1B', CREAM = '#F5E6D3';
+  const r = 3.5 * (1 - (x / 7.2) ** 2);                                           // pointed ends
+  if (r <= 0 || y * y + z * z > r * r) return null;
+  const ax = Math.abs(x);
+  if (ax === 4) return CREAM;                                                     // end stripes
+  const front = z >= Math.sqrt(Math.max(0, r * r - y * y)) - 1.1;
+  if (front && ax <= 3) {                                                         // laces
+    if (y === 1) return CREAM;
+    if (x % 2 === 0 && (y === 0 || y === 2)) return CREAM;
+  }
+  return BROWN;
+}
+
+const ell = (x, y, z, cx, cy, cz, rx, ry, rz) => ((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2 + ((z - cz) / rz) ** 2 <= 1;
+const cellHash = (x, y, z) => { const s = Math.sin(x * 127.1 + y * 311.7 + z * 74.7) * 43758.5453; return s - Math.floor(s); };
+const unit = (x, y, z) => { const d = Math.hypot(x, y, z) || 1; return [x / d, y / d, z / d, d]; };
+const every = (v, n) => ((Math.round(v) % n) + n) % n === 0;
+
+function globe(x, y, z) {
+  const [nx, ny, nz, d] = unit(x, y, z);
+  if (d > 5.6) return null;
+  if (Math.abs(ny) > 0.86) return '#EAF4F8';                                      // ice caps
+  const land = Math.sin(nx * 3.1 + ny * 1.3) * Math.cos(nz * 2.7 - ny * 1.9) + Math.sin(ny * 4.2 + nz * 1.1) * 0.45;
+  return land > 0.42 ? '#4FAE4A' : '#2F7FD6';
+}
+
+// Classic ball: black pentagons at the 12 icosahedron points on white, tilted so one pentagon
+// sits dead centre facing the viewer. Drawn large; seams were too noisy at this resolution.
+const PHI = (1 + Math.sqrt(5)) / 2;
+const BALL_TILT = Math.atan2(1, PHI);
+const toBall = (v) => {
+  const l = Math.hypot(...v), c = Math.cos(BALL_TILT), s = Math.sin(BALL_TILT);
+  const [x, y, z] = v.map((n) => n / l);
+  return [x, y * c - z * s, y * s + z * c];
+};
+const ICO = [[0, 1, PHI], [0, 1, -PHI], [0, -1, PHI], [0, -1, -PHI], [1, PHI, 0], [1, -PHI, 0], [-1, PHI, 0], [-1, -PHI, 0],
+  [PHI, 0, 1], [PHI, 0, -1], [-PHI, 0, 1], [-PHI, 0, -1]].map(toBall);
+function soccer(x, y, z) {
+  const [nx, ny, nz, d] = unit(x, y, z);
+  if (d > 6.8) return null;
+  return Math.max(...ICO.map((v) => v[0] * nx + v[1] * ny + v[2] * nz)) > 0.95 ? '#221E1C' : '#FBFAF7';
+}
+
+function tennis(x, y, z) {
+  const [nx, ny, nz, d] = unit(x, y, z);
+  if (d > 5.1) return null;
+  return Math.abs(ny - 0.8 * (nx * nx - nz * nz)) < 0.14 ? '#F4F1E6' : '#C9D85A'; // saddle-shaped seam
+}
+
+function basketball(x, y, z) {
+  if (Math.hypot(x, y, z) > 5.3) return null;
+  const LINE = '#3A2418';
+  if (x === 0 || y === 0) return LINE;
+  if (Math.abs(Math.abs(x) - (2.6 + 0.07 * y * y)) < 0.5) return LINE;
+  return '#E57A2E';
+}
+
+function rocket(x, y, z) {
+  const WHITE = '#F2EFEA', RED = '#D9442E', RIM = '#2B4F7A', GLASS = '#8FD3F4', ORANGE = '#F7A531', YELLOW = '#FFD66B';
+  const rr = Math.hypot(x, z);
+  if (y >= 3 && y <= 7 && rr <= 2.2 * (1 - (y - 3) / 4.4) + 0.2) return RED;     // nose cone
+  if (y >= -4 && y < 3 && rr <= 2.2) {
+    const w = Math.hypot(x, y - 0.5);
+    if (z > 0 && rr >= 1.6 && w <= 1.3) return w <= 0.8 ? GLASS : RIM;            // porthole
+    return y === -4 ? RED : WHITE;
+  }
+  if (y >= -6 && y <= -2 && (Math.abs(x) <= 0.5 || Math.abs(z) <= 0.5) && rr > 2 && rr <= 2.5 + (-2 - y) * 0.5) return RED; // fins
+  if (y >= -8 && y < -4 && rr <= 1.6 * (1 - (-4 - y) / 4.5)) return y >= -5.5 ? YELLOW : ORANGE; // flame
+  return null;
+}
+
+// Side profile sampled straight from the car icon (19×9 cells, rear on the left, nose on the right):
+// R body, C window/taillight, B mirror/handle/bumper, Y headlight. Wheels are laid over it using
+// the icon's measured wheel centres and radii, then the profile is extruded into a 3D car.
+const CAR_ROWS = [
+  '.....RRRRRRR.......',
+  '...RRCCCRCCCR......',
+  '...RCCCCRCCCBR.....',
+  '.RRRRRRRRRRRRRRRR..',
+  'CRRRRRRRRBRRRRRRRRY',
+  'RRRRRRRRRRRRRRRRRRR',
+  'BBRRRRRRRRRRRRRRRRB',
+  '...................',
+  '...................',
+];
+const CAR_WHEELS = [[4, 6], [14, 6]];   // column, row of each wheel centre
+function car(x, y, z) {
+  const col = x + 9, row = 4 - y, az = Math.abs(z);
+  if (col < 0 || col > 18 || row < 0 || row > 8 || az > 3) return null;
+  const PAINT = { R: '#D24E26', C: '#F8E8D5', B: '#5E3120', T: '#33312D', Y: '#FDB94A' };
+  // Wheels sit in the outer two layers on each side: tyre, cream hub, brown centre cap
+  for (const [wc, wr] of CAR_WHEELS) {
+    const d = Math.hypot(col - wc, row - wr);
+    if (d <= 2.3 && az >= 2) return az === 3 ? (d < 0.5 ? PAINT.B : d <= 1.5 ? PAINT.C : PAINT.T) : PAINT.T;
+  }
+  const ch = CAR_ROWS[row][col];
+  if (ch === '.') return null;
+  const cabin = row <= 2;                                                          // greenhouse is narrower than the body
+  if (az > (cabin ? 2 : 3)) return cabin && ch === 'B' && az === 3 ? PAINT.B : null; // wing mirror sticks out
+  if (ch === 'B' && cabin) return PAINT.R;
+  if (ch === 'B' && row === 4) return az === 3 ? PAINT.B : PAINT.R;                // door handle on the doors only
+  if ((ch === 'C' || ch === 'Y') && row === 4) return az >= 2 ? PAINT[ch] : PAINT.R; // a light at each corner
+  return PAINT[ch];
+}
+
+function tree(x, y, z) {
+  const TRUNK = '#7A4B2C', LEAF = '#3F8F3A', LIGHT = '#5DB04E';
+  if (Math.hypot(x, z) <= 1 && y >= -7 && y <= -1) return TRUNK;
+  const crown = [[0, 2, 0, 3.4], [-2.8, 0.6, 0.4, 2.5], [2.8, 0.8, -0.3, 2.5], [0, 4.6, 0, 2.4],
+    [-1.8, 3.6, 1.2, 2.1], [1.9, 3.3, 1, 2.1], [0, 0.5, 2, 2.2], [0, 0.8, -2, 2.2]];
+  for (const [cx, cy, cz, r] of crown) {
+    if ((x - cx) ** 2 + (y - cy) ** 2 + (z - cz) ** 2 <= r * r) return y >= 3 || cellHash(x, y, z) > 0.7 ? LIGHT : LEAF;
+  }
+  return null;
+}
+
+function house(x, y, z) {
+  const WALL = '#F3E3C8', ROOF = '#C9472E', DOOR = '#6B3E26', WIN = '#F9D66B', BRICK = '#A8432A', BUSH = '#4E9A45';
+  const ax = Math.abs(x);
+  if (x >= 2 && x <= 3 && z >= -1 && z <= 0 && y >= 2 && y <= 6) return BRICK;    // chimney
+  if (y >= 1 && y <= 5 && ax <= 5.2 - (y - 1) * 1.25 && Math.abs(z) <= 3.6) return ROOF;
+  if (ax <= 4 && y >= -4 && y <= 0 && Math.abs(z) <= 3) {
+    if (z === 3 && ax <= 1 && y <= -1) return DOOR;
+    if (z === 3 && ax >= 2 && ax <= 3 && (y === -2 || y === -1)) return WIN;
+    return WALL;
+  }
+  if (z === 4 && ((y === -4 && ax >= 2 && ax <= 4) || (y === -3 && ax >= 2.5 && ax <= 3.5))) return BUSH;
+  return null;
+}
+
+function cactus(x, y, z) {
+  const GREEN = '#3E8A4A', RIB = '#56A85D', SAND = '#C9A27A', FLOWER = '#F46FA0';
+  const rib = every(Math.atan2(z, x) / (Math.PI / 4), 2) ? RIB : GREEN;
+  if (x === 0 && z === 0 && y === 7) return FLOWER;
+  if (segDist(x, y, z, 0, -6, 0, 0, 5, 0) <= 1.8) return rib;
+  if (segDist(x, y, z, 0, -0.5, 0, -3.6, -0.5, 0) <= 1.2 || segDist(x, y, z, -3.6, -0.5, 0, -3.6, 3, 0) <= 1.2) return rib;
+  if (segDist(x, y, z, 0, 1.2, 0, 3.4, 1.2, 0) <= 1.2 || segDist(x, y, z, 3.4, 1.2, 0, 3.4, 4.2, 0) <= 1.2) return rib;
+  if (ell(x, y, z, 0, -7, 0, 3.5, 1.3, 3)) return SAND;
+  return null;
+}
+
+// Drawn at 1.2× so the wheels have enough cells to read as round
+const bicycle = (x, y, z) => bicycleShape(x / 1.2, y / 1.2 + 0.4, z);
+function bicycleShape(x, y, z) {
+  if (z !== 0) return null;
+  const TIRE = '#2B2B2B', FRAME = '#E8663B', PART = '#3A3A3A';
+  for (const wx of [-4.2, 4.2]) {
+    const d = Math.hypot(x - wx, y + 2.4);
+    if (d >= 2.4 && d <= 3.3) return TIRE;
+    if (d <= 0.5) return PART;
+  }
+  const BB = [-0.3, -2.4], SEAT = [-1.9, 1.6], HEAD = [2.6, 1.6], RH = [-4.2, -2.4], FH = [4.2, -2.4];
+  const tube = (a, b, r = 0.6) => segDist(x, y, 0, a[0], a[1], 0, b[0], b[1], 0) <= r;
+  if (tube([-2.8, 2.4], [-1.2, 2.4])) return PART;                                 // saddle
+  if (tube(HEAD, [2.4, 3.2]) || tube([2.4, 3.2], [3.6, 3.2])) return PART;         // handlebar
+  if (tube(BB, SEAT) || tube(SEAT, HEAD) || tube(HEAD, BB) || tube(RH, BB) || tube(RH, SEAT) || tube(HEAD, FH)) return FRAME;
+  return null;
+}
+
+function controller(x, y, z) {
+  const BODY = '#2F6FE0', DARK = '#1E2A4A';
+  if (z === 2) {                                                                   // controls stand proud of the face
+    const at = (px, py) => x === px && y === py;
+    if (at(-3, 1) || at(-4, 1) || at(-2, 1) || at(-3, 2) || at(-3, 0)) return DARK;
+    if (at(3, 2)) return '#FFD23F';
+    if (at(4, 1)) return '#EF4B4B';
+    if (at(3, 0)) return '#39C16C';
+    if (at(2, 1)) return '#6FD3FF';
+    if ((at(-1, -1) || at(1, -1))) return DARK;
+  }
+  if (ell(x, y, z, 0, 0.3, 0, 5.2, 2.2, 1.6) || ell(x, y, z, -3.6, -1.4, 0, 1.9, 2.4, 1.5) || ell(x, y, z, 3.6, -1.4, 0, 1.9, 2.4, 1.5)) return BODY;
+  return null;
+}
+
+function bus(x, y, z) {
+  const YELLOW = '#F6C544', GLASS = '#BFE3F2', DOOR = '#8FC6E0', TIRE = '#2C2A2A', HUB = '#C9C9C9', LIGHT = '#FFF3C4';
+  const az = Math.abs(z);
+  for (const wx of [-4, 4]) {
+    const d = Math.hypot(x - wx, y + 2.8);
+    if (d <= 1.4 && az >= 1.5 && az <= 2.8) return d <= 0.6 ? HUB : TIRE;
+  }
+  if (Math.abs(x) <= 6.5 && y >= -2.5 && y <= 2.5 && az <= 2.5) {
+    if (x >= 6 && y >= 0 && y <= 2 && az <= 1.5) return GLASS;                     // windscreen
+    if (x >= 6 && y === -1 && az >= 1.5) return LIGHT;
+    if (z >= 2 && x >= 4 && x <= 5 && y >= -2 && y <= 1) return DOOR;
+    if (az >= 2 && y >= 0 && y <= 1 && x >= -5.5 && x <= 3 && !every(x, 3)) return GLASS;
+    return YELLOW;
+  }
+  return null;
+}
+
+function sunModel(x, y, z) {
+  if (ell(x, y, z, 0, 0, 0, 3.4, 3.4, 1.8)) return '#FFC93C';
+  if (z !== 0) return null;
+  const r = Math.hypot(x, y);
+  if (r < 4.4 || r > 6.4) return null;
+  const a = Math.atan2(y, x), k = Math.round(a / (Math.PI / 4));
+  return Math.abs(a - k * Math.PI / 4) * r <= 0.7 ? '#FFB02E' : null;             // eight rays
+}
+
+function guitar(x, y, z) {
+  const BODY = '#E8913A', RIM = '#B9652A', HOLE = '#4A2A18', NECK = '#7A4424', HEAD = '#5A2E17';
+  if (Math.abs(z) <= 1) {
+    const lower = Math.hypot(x + 2.2, y), upper = Math.hypot(x - 1, y);
+    if (lower <= 3 || upper <= 2.2) {
+      if (z === 1 && Math.hypot(x - 0.6, y) <= 1) return HOLE;                     // sound hole
+      if (z === 1 && x === -3 && Math.abs(y) <= 1) return HOLE;                     // bridge
+      return lower > 2.4 && upper > 1.6 ? RIM : BODY;
+    }
+  }
+  if (x >= 3 && x <= 6 && y === 0 && (z === 0 || z === 1)) return NECK;
+  if (x >= 7 && x <= 8 && Math.abs(y) <= 1 && z === 0) return HEAD;
+  return null;
+}
+
+function train(x, y, z) {
+  const WHITE = '#F3F0EA', RED = '#D8452B', WIN = '#2D3E5C', WHEEL = '#2C2A2A', RAIL = '#9AA0A6';
+  const az = Math.abs(z);
+  if (y === -4 && az <= 2 && x >= -7 && x <= 8) return RAIL;
+  if (y === -3 && az >= 1 && az <= 2 && x >= -6 && x <= 4 && every(x, 2)) return WHEEL;
+  if (x >= -7 && x <= 4.5 && y >= -2 && y <= 2 && az <= 2.2) {
+    if (y === -1) return RED;
+    if (y >= 0 && y <= 1 && az >= 2 && !every(x, 3)) return WIN;
+    return WHITE;
+  }
+  if (x > 4.5 && x <= 8 && y >= -2 && az <= 2.2) {                                 // sloped nose
+    const top = 2 - (x - 4.5) * 1.1;
+    if (y <= top) return y >= top - 1.2 && y >= 0 ? WIN : y === -1 || x >= 7 ? RED : WHITE;
+  }
+  return null;
+}
+
+function moon(x, y, z) {
+  if (!ell(x, y, z, 0, 0, 0, 5.4, 5.4, 2.6) || ell(x, y, z, 2.6, 0.8, 0, 4.3, 4.3, 3.5)) return null;
+  for (const [cx, cy, r] of [[-3, -1.5, 1], [-1.5, 2.5, 0.8], [-1, -3.5, 0.9]]) {
+    if (z >= 1 && Math.hypot(x - cx, y - cy) <= r) return '#E0A92E';                // craters
+  }
+  return '#F7C948';
+}
+
+function sunflower(x, y, z) {
+  const STEM = '#3D8B3D', LEAF = '#4FA84A', SEEDS = '#6B3A1E', SEEDS2 = '#8A4E26', PETAL = '#F9C22E', PETAL2 = '#F2A81D';
+  const dy = y - 2.5, r = Math.hypot(x, dy);
+  if (Math.abs(z) <= 1 && r <= 2.2) return z >= 1 && cellHash(x, y, z) > 0.6 ? SEEDS2 : SEEDS;
+  if (z === 0 && r <= 5) {
+    const wave = Math.abs(Math.cos(Math.atan2(dy, x) * 6));
+    if (r <= 3.4 + 1.5 * wave) return wave > 0.6 ? PETAL : PETAL2;
+  }
+  if (x === 0 && z === 0 && y >= -7 && y < 2.5) return STEM;
+  if (ell(x, y, z, -2, -4, 0, 2, 0.8, 0.8) || ell(x, y, z, 2, -2.8, 0, 2, 0.8, 0.8)) return LEAF;
+  return null;
+}
+
+function cloud(x, y, z) {
+  const puffs = [[-3.2, -0.6, 2.4], [0, 0.9, 3.3], [3.2, -0.3, 2.6], [-0.8, -1.2, 2.6], [1.6, -1.2, 2.3]];
+  if (y < -2 || !puffs.some(([cx, cy, r]) => (x - cx) ** 2 + (y - cy) ** 2 + (z / 0.62) ** 2 <= r * r)) return null;
+  if (y === -2) return '#4E8FE0';
+  return y >= 2 ? '#D6EEFC' : '#9BD3F7';
+}
+
+function cameraModel(x, y, z) {
+  const PINK = '#F063A5', DEEP = '#D94A8C', LENS = '#3A2440', GLASS = '#8C4A9E', FLASH = '#FFD66B';
+  const lr = Math.hypot(x, y + 0.4);
+  if (z >= 2 && z <= 3 && lr <= 2.6) {                                             // lens barrel
+    if (lr <= 1.2) return z === 3 && x === -1 && y === 0 ? '#FFFFFF' : GLASS;
+    return lr <= 1.9 ? LENS : DEEP;
+  }
+  if (Math.abs(x) <= 5 && y >= -3 && y <= 2 && Math.abs(z) <= 1.8) return z >= 1 && x === 4 && y === 1 ? FLASH : PINK;
+  if (Math.abs(x) <= 2 && y === 3 && Math.abs(z) <= 1.2) return DEEP;
+  if (x === -4 && y === 3 && Math.abs(z) <= 0.5) return DEEP;
+  return null;
+}
+
+function ship(x, y, z) {
+  const HULL = '#2B6CC4', DECK = '#F3F0EA', WIN = '#2D3E5C', FUNNEL = '#D8452B', SOOT = '#2A2522', KEEL = '#C43A2A', WAVE = '#6FC3F0';
+  const az = Math.abs(z);
+  if (y === -4 && az <= 3 && x >= -7 && x <= 7 && !every(x + z, 3)) return WAVE;
+  if (y >= -3 && y <= -1 && x >= -6 && x <= 7 && az <= (x > 3 ? 2.6 - (x - 3) * 0.75 : 2.6)) {
+    return y === -1 ? DECK : y === -3 ? KEEL : HULL;
+  }
+  if (x >= -3.5 && x <= 2 && y >= 0 && y <= 2 && az <= 1.6) {
+    if (y === 1 && (az >= 1 && every(x, 2) || x === 2)) return WIN;
+    return DECK;
+  }
+  if (x >= -2.5 && x <= -1 && y >= 3 && y <= 5 && az <= 0.8) return y === 5 ? SOOT : FUNNEL;
+  return null;
+}
+
+function star(x, y, z) {
+  const r = Math.hypot(x, y), seg = (2 * Math.PI) / 5;
+  const k = ((Math.atan2(x, y) % seg) + seg) % seg;                                 // 0 = pointing straight up
+  const edge = 2.6 + 3.4 * (Math.abs(k - seg / 2) / (seg / 2));
+  if (r > edge || Math.abs(z) > 0.6 + 1.6 * (1 - r / edge)) return null;          // puffy in the middle
+  return z >= 1 && x < 0 && y > 0 ? '#FFE38A' : '#FFC93C';
+}
+
+function balloon(x, y, z) {
+  const PINK = '#F0508A', SHINE = '#FFB3CC', KNOT = '#C63A6E', STRING = '#9A3A5E';
+  if (ell(x, y, z, 0, 2, 0, 3.6, 4.4, 3.6)) return z >= 2 && x >= -2 && x <= -1 && y >= 3 && y <= 4 ? SHINE : PINK;
+  if (x === 0 && z === 0 && y === -3) return KNOT;
+  if (z === 0 && y <= -4 && y >= -8 && x === Math.round(Math.sin(y * 0.9) * 0.8)) return STRING;
+  return null;
+}
+
+// Sample a model, keep only the surface cells (the inside is never seen) and centre it
+function voxelize(sample, n = 9) {
+  const solid = new Map();
+  const key = (x, y, z) => `${x},${y},${z}`;
+  for (let x = -n; x <= n; x++) for (let y = -n; y <= n; y++) for (let z = -n; z <= n; z++) {
+    const c = sample(x, y, z);
+    if (c) solid.set(key(x, y, z), { x, y, z, c });
+  }
+  const around = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+  const box = new THREE.Box3();
+  const cells = [];
+  for (const v of solid.values()) {
+    if (around.every(([dx, dy, dz]) => solid.has(key(v.x + dx, v.y + dy, v.z + dz)))) continue;
+    const p = new THREE.Vector3(v.x, v.y, v.z).multiplyScalar(STEP);
+    box.expandByPoint(p);
+    cells.push({ p, color: v.c });
+  }
+  const mid = box.getCenter(new THREE.Vector3());
+  cells.forEach((cell) => cell.p.sub(mid));
+  return cells;
+}
+
+const MODELS = {
+  plane, dog, football, globe, soccer, tennis, rocket, car, tree, house, cactus, bicycle, basketball,
+  controller, bus, sun: sunModel, guitar, train, moon, sunflower, cloud, camera: cameraModel, ship, star, balloon,
+};
+const SHAPES = Object.fromEntries(Object.entries(MODELS).map(([name, fn]) => [name, voxelize(fn)]));
+
+// How each object is presented. yaw: SIDE shows a three-quarter side view with the front pointing
+// right, FRONT faces the viewer. roll tips it like the icon; spin/rollSpin keep it turning.
+const SIDE = Math.PI / 4 - 0.38, FRONT = Math.PI / 4;
+const POSES = {
+  plane: { yaw: SIDE, roll: 0.1 },
+  dog: { yaw: SIDE },
+  football: { yaw: FRONT - 0.12, roll: 0.6 },
+  globe: { yaw: FRONT, roll: 0.35, spin: 0.5 },
+  soccer: { yaw: FRONT, pitch: -0.37 },   // tipped up to meet the camera's downward look
+  tennis: { yaw: FRONT, roll: 0.3, spin: 0.5 },
+  basketball: { yaw: FRONT, roll: 0.2, spin: 0.5 },
+  rocket: { yaw: FRONT, roll: -0.7 },
+  car: { yaw: SIDE },
+  tree: { yaw: FRONT },
+  house: { yaw: FRONT - 0.3 },
+  cactus: { yaw: FRONT },
+  bicycle: { yaw: FRONT - 0.1 },
+  controller: { yaw: FRONT },
+  bus: { yaw: SIDE },
+  sun: { yaw: FRONT, rollSpin: 0.25 },
+  guitar: { yaw: FRONT, roll: 0.55 },
+  train: { yaw: SIDE },
+  moon: { yaw: FRONT, roll: -0.2 },
+  sunflower: { yaw: FRONT },
+  cloud: { yaw: FRONT },
+  camera: { yaw: FRONT - 0.15 },
+  ship: { yaw: SIDE },
+  star: { yaw: FRONT },
+  balloon: { yaw: FRONT },
+};
+const blobCells = buildBlob();
+const CAPACITY = Math.max(blobCells.length, ...Object.values(SHAPES).map((s) => s.length));
+
+const voxelMesh = new THREE.InstancedMesh(
+  new THREE.BoxGeometry(CUBE, CUBE, CUBE),
+  new THREE.MeshLambertMaterial(),
+  CAPACITY
+);
+voxelMesh.frustumCulled = false;
+scene.add(voxelMesh);
+
+const slots = Array.from({ length: CAPACITY }, () => ({
+  active: false,
+  home: new THREE.Vector3(),
+  pos: BLOB_CENTER.clone(),
+  vel: new THREE.Vector3(),
+  color: new THREE.Color(),
+  quat: new THREE.Quaternion(),
+  lastRot: new THREE.Vector3(),   // last oriented home offset, so rotation is applied rigidly
+  delay: 0,
+  jitter: Math.random() * 0.08,
+  stiffness: 38 + Math.random() * 22,
+  phase: Math.random() * Math.PI * 2,
+  swirl: new THREE.Vector3().randomDirection(),
+}));
+
+let maxR = 1;
+function refreshDelays() {
+  const act = slots.filter((s) => s.active);
+  maxR = Math.max(1, ...act.map((s) => s.home.length()));
+  // Outer cubes replay the leader's path later than inner ones, so the mass pours after the mouse
+  act.forEach((s) => { const r = s.home.length() / maxR; s.delay = 0.03 + r * r * 0.32 + s.jitter; });
+}
+
+blobCells.forEach((cell, i) => {
+  const s = slots[i];
+  s.active = true;
+  s.home.copy(cell.p);
+  s.lastRot.copy(cell.p);
+  s.color.set(cell.color);
+  s.pos.copy(BLOB_CENTER).add(cell.p);
+});
+refreshDelays();
+slots.forEach((s, i) => voxelMesh.setColorAt(i, s.color));
+
+scene.add(new THREE.AmbientLight(0xffffff, 2.0));
+const sun = new THREE.DirectionalLight(0xffffff, 1.1);
+sun.position.set(4, 10, 6);
+scene.add(sun);
+
+// Mouse → point on a camera-facing plane through the portal centre, clamped inside the container
+const raycaster = new THREE.Raycaster();
+const pointer = new THREE.Vector2();
+const facing = new THREE.Plane().setFromNormalAndCoplanarPoint(dir, BLOB_CENTER);
+const hit = new THREE.Vector3();
+const mouseTarget = BLOB_CENTER.clone();
+const leader = BLOB_CENTER.clone();
+const leaderVel = new THREE.Vector3();
+const LIMIT = new THREE.Vector3(2.2, 2.4, 2.2);   // keeps the blob clear of the walls and frames
+
+// Soft clamp: eases into the boundary instead of hitting a hard wall
+const softLimit = (o, l) => l * Math.tanh(o / l);
+
+window.addEventListener('pointermove', (e) => {
+  pointer.set((e.clientX / window.innerWidth) * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1);
+  raycaster.setFromCamera(pointer, camera);
+  if (!raycaster.ray.intersectPlane(facing, hit)) return;
+  hit.sub(BLOB_CENTER);
+  hit.set(softLimit(hit.x, LIMIT.x), softLimit(hit.y, LIMIT.y), softLimit(hit.z, LIMIT.z));
+  mouseTarget.copy(BLOB_CENTER).add(hit);
+});
+document.addEventListener('pointerleave', () => mouseTarget.copy(BLOB_CENTER));
+
+// Recent leader positions, so each cube can follow the same path a little later
+const history = [];
+const HISTORY_SECONDS = 0.6;
+function leaderAt(time, out) {
+  for (let i = history.length - 1; i > 0; i--) {
+    const a = history[i - 1], b = history[i];
+    if (a.t <= time) {
+      const k = (time - a.t) / Math.max(b.t - a.t, 1e-5);
+      return out.lerpVectors(a.p, b.p, Math.min(Math.max(k, 0), 1));
+    }
+  }
+  return out.copy(history.length ? history[0].p : leader);
+}
+
+let currentShape = null;
+let morph = null;
+// Objects sway gently so their volume reads; the blob stays axis-aligned
+const Z_AXIS = new THREE.Vector3(0, 0, 1);
+const X_AXIS = new THREE.Vector3(1, 0, 0);
+const rollQ = new THREE.Quaternion(), spinQ = new THREE.Quaternion();
+function poseFor(shape, t, out) {
+  const p = POSES[shape];
+  if (!p) return out.identity();
+  const sway = p.spin ? 0 : Math.sin(t * 0.45) * 0.32;
+  out.setFromAxisAngle(Y_AXIS, (p.yaw ?? 0) + sway);
+  out.multiply(rollQ.setFromAxisAngle(Z_AXIS, (p.roll ?? 0) + (p.rollSpin ? t * p.rollSpin : 0)));
+  if (p.pitch) out.multiply(spinQ.setFromAxisAngle(X_AXIS, p.pitch));
+  if (p.spin) out.multiply(spinQ.setFromAxisAngle(Y_AXIS, t * p.spin));
+  return out;
+}
+const orient = (v, q, out) => out.copy(v).applyQuaternion(q);
+
+// ---- Transform choreography ----
+// 1. gather: the mass tightens and shivers
+// 2. vortex: every cube lifts into a spinning ring around the centre; extra cubes rise out of the
+//    bottom frame, surplus cubes get pulled up into the top frame
+// 3. build: cubes peel off the vortex one by one, bottom layer first, arc into place tumbling,
+//    take on the object's colour mid-flight and land with a small pop
+const GATHER = 0.45, FIRST_RELEASE = 1.35, BUILD_SPREAD = 2.6;
+
+function startMorph(shape) {
+  const cells = SHAPES[shape];
+  if (!cells || morph) return false;
+  const src = slots.map((s, i) => (s.active ? i : -1)).filter((i) => i >= 0).sort(() => Math.random() - 0.5);
+  const free = slots.map((s, i) => (s.active ? -1 : i)).filter((i) => i >= 0);
+  const order = cells
+    .map((c) => ({ c, key: c.p.y + (Math.random() - 0.5) * 1.6 }))
+    .sort((a, b) => a.key - b.key);
+
+  const entries = [];
+  const makeEntry = (slotIndex, extra) => {
+    const s = slots[slotIndex];
+    return {
+      slot: slotIndex,
+      startOff: s.pos.clone().sub(leader),
+      spawnFrom: s.pos.clone(),
+      fromColor: s.color.clone(),
+      fromQuat: s.quat.clone(),
+      radius: 3.6 + Math.random() * 2.6,
+      height: (Math.random() - 0.5) * 6.5,
+      phi0: Math.random() * Math.PI * 2,
+      omega: 2.2 + Math.random() * 1.4,
+      axis: new THREE.Vector3().randomDirection(),
+      spin: 3 + Math.random() * 6,
+      arc: 0.6 + Math.random() * 1.6,
+      travel: 0.8 + Math.random() * 0.35,
+      enter: 0,
+      ...extra,
+    };
+  };
+
+  order.forEach(({ c }, k) => {
+    const spawned = k >= src.length;
+    const slotIndex = spawned ? free.pop() : src[k];
+    const s = slots[slotIndex];
+    if (spawned) {
+      // New cubes emerge from the bottom frame
+      s.pos.set(W / 2 + (Math.random() - 0.5) * 6, BOTTOM_Y, W / 2 + (Math.random() - 0.5) * 6);
+      s.color.set(c.color);
+      s.quat.identity();
+    }
+    entries.push(makeEntry(slotIndex, {
+      home: c.p.clone(),
+      toColor: new THREE.Color(c.color),
+      spawned,
+      enter: spawned ? GATHER + Math.random() * 0.8 : 0,
+      release: FIRST_RELEASE + (k / Math.max(order.length - 1, 1)) * BUILD_SPREAD + Math.random() * 0.12,
+    }));
+    s.active = true;
+  });
+
+  // Surplus cubes are drawn up into the top frame and vanish
+  src.slice(order.length).forEach((slotIndex) => {
+    entries.push(makeEntry(slotIndex, {
+      leaving: true,
+      exit: new THREE.Vector3(W / 2 + (Math.random() - 0.5) * 5, TOP_Y, W / 2 + (Math.random() - 0.5) * 5),
+      release: GATHER + 0.5 + Math.random() * (BUILD_SPREAD * 0.7),
+    }));
+  });
+
+  const end = Math.max(...entries.map((e) => e.release + e.travel)) + 0.35;
+  morph = { shape, start: clock.elapsedTime, entries, end };
+  return true;
+}
+
+const tmpA = new THREE.Vector3(), tmpB = new THREE.Vector3(), tmpQ = new THREE.Quaternion(), aligned = new THREE.Quaternion();
+const ONE = new THREE.Vector3(1, 1, 1);
+
+function orbitPos(e, tau, center, out) {
+  const k = Math.max(tau - GATHER, 0);
+  const ramp = 0.6;
+  const phi = e.phi0 + e.omega * (k - ramp * (1 - Math.exp(-k / ramp)));   // spins up smoothly
+  return out.set(
+    center.x + Math.cos(phi) * e.radius,
+    center.y + e.height + Math.sin(tau * 1.3 + e.phi0) * 0.3,
+    center.z + Math.sin(phi) * e.radius
+  );
+}
+
+function updateMorph(now) {
+  const tau = now - morph.start;
+  poseFor(morph.shape, now, aligned);
+
+  for (const e of morph.entries) {
+    const s = slots[e.slot];
+    let scale = 1;
+    const tumble = tmpQ.setFromAxisAngle(e.axis, e.spin * tau);
+
+    if (tau < e.release) {
+      if (tau < GATHER && !e.spawned) {
+        // Tighten and shiver
+        const k = easeInOut(tau / GATHER);
+        s.pos.copy(leader).addScaledVector(e.startOff, 1 - 0.35 * k)
+          .addScaledVector(s.swirl, Math.sin(tau * 55 + s.phase) * 0.07 * k);
+        s.quat.copy(e.fromQuat);
+      } else {
+        // Lift into the vortex (spawned cubes rise from the bottom frame and grow)
+        const from = e.spawned ? e.enter : GATHER;
+        const k = easeInOut(clamp((tau - from) / 0.75, 0, 1));
+        if (e.spawned) tmpA.copy(e.spawnFrom);
+        else tmpA.copy(leader).addScaledVector(e.startOff, 0.65);
+        orbitPos(e, tau, leader, tmpB);
+        if (!e.spawned || k > 0) s.pos.lerpVectors(tmpA, tmpB, k);
+        s.quat.slerpQuaternions(e.fromQuat, tumble, k);
+        if (e.spawned) scale = k;
+      }
+    } else {
+      const u = clamp((tau - e.release) / e.travel, 0, 1);
+      const k = easeInOut(u);
+      orbitPos(e, tau, leader, tmpA);
+      if (e.leaving) {
+        // Pulled up through the top frame, shrinking away
+        s.pos.lerpVectors(tmpA, e.exit, k);
+        s.quat.copy(tumble);
+        scale = 1 - smooth(0.45, 1, u);
+      } else {
+        orient(e.home, aligned, tmpB).add(leader);
+        s.pos.lerpVectors(tmpA, tmpB, k);
+        s.pos.y += Math.sin(Math.PI * k) * e.arc;
+        s.quat.slerpQuaternions(tumble, aligned, k);
+        s.color.lerpColors(e.fromColor, e.toColor, smooth(0.15, 0.8, u));
+        // Land with a small pop
+        const since = tau - e.release - e.travel;
+        if (since > 0) scale = 1 + 0.2 * Math.sin(clamp(since / 0.28, 0, 1) * Math.PI);
+      }
+    }
+    s.vel.set(0, 0, 0);
+    dummy.position.copy(s.pos);
+    dummy.quaternion.copy(s.quat);
+    dummy.scale.copy(ONE).multiplyScalar(Math.max(scale, 0.0001));
+    dummy.updateMatrix();
+    voxelMesh.setMatrixAt(e.slot, dummy.matrix);
+    voxelMesh.setColorAt(e.slot, s.color);
+  }
+  voxelMesh.instanceColor.needsUpdate = true;
+
+  if (tau >= morph.end) {
+    for (const e of morph.entries) {
+      const s = slots[e.slot];
+      if (e.leaving) { s.active = false; continue; }
+      s.home.copy(e.home);
+      orient(s.home, aligned, s.lastRot);
+      s.color.copy(e.toColor);
+      voxelMesh.setColorAt(e.slot, s.color);
+    }
+    voxelMesh.instanceColor.needsUpdate = true;
+    currentShape = morph.shape;
+    morph = null;
+    frameTurn += 1;
+    refreshDelays();
+    window.parent.postMessage({ type: 'transform-done', shape: currentShape }, location.origin);
+  }
+}
+
+const dummy = new THREE.Object3D();
+const target = new THREE.Vector3();
+const flow = new THREE.Vector3();
+const goal = new THREE.Vector3();
+function updateVoxels(dt, now) {
+  // The leader glides toward the mouse like a floating body, with a touch of momentum.
+  // Objects follow more gently than the blob, and everything recentres during a transform.
+  const follow = morph ? 0 : currentShape ? 0.45 : 1;
+  goal.copy(mouseTarget).sub(BLOB_CENTER).multiplyScalar(follow).add(BLOB_CENTER);
+  const prev = leader.clone();
+  leaderVel.addScaledVector(goal.sub(leader), 26 * dt);
+  leaderVel.multiplyScalar(Math.exp(-7.5 * dt));
+  leader.addScaledVector(leaderVel, dt);
+  const speed = prev.distanceTo(leader) / Math.max(dt, 1e-4);
+
+  history.push({ t: now, p: leader.clone() });
+  while (history.length > 2 && now - history[0].t > HISTORY_SECONDS) history.shift();
+
+  if (morph) {
+    updateMorph(now);
+  } else {
+    // Direction of travel, used to stretch the mass into a stream while it moves
+    flow.copy(leaderVel);
+    const flowLen = flow.length();
+    if (flowLen > 1e-4) flow.divideScalar(flowLen);
+    const stretch = Math.min(flowLen * 0.06, 0.9);
+    const ripple = Math.min(speed * 0.045, 0.6);
+    poseFor(currentShape, now, aligned);
+
+    slots.forEach((s, i) => {
+      if (!s.active) return;
+      leaderAt(now - s.delay, target);
+      orient(s.home, aligned, tmpA);
+      // Carry the object's own turning directly, so sway/spin never smears the shape;
+      // only the mouse-driven motion goes through the springs
+      s.pos.add(tmpB.copy(tmpA).sub(s.lastRot));
+      s.lastRot.copy(tmpA);
+      target.add(tmpA);
+      // Cubes behind the direction of travel lag further, cubes ahead lead: a teardrop stream
+      target.addScaledVector(flow, -stretch * (s.home.dot(flow) < 0 ? 1.4 : 0.4) * (s.home.length() / maxR));
+      // Watery wobble that grows with speed and settles to stillness at rest
+      target.addScaledVector(s.swirl, Math.sin(now * 5 + s.phase) * ripple);
+
+      s.vel.addScaledVector(target.sub(s.pos), s.stiffness * dt);
+      s.vel.multiplyScalar(Math.exp(-9 * dt));
+      s.pos.addScaledVector(s.vel, dt);
+      s.quat.copy(aligned);
+      dummy.position.copy(s.pos);
+      dummy.quaternion.copy(s.quat);
+      dummy.scale.copy(ONE);
+      dummy.updateMatrix();
+      voxelMesh.setMatrixAt(i, dummy.matrix);
+    });
+  }
+
+  // Parked slots stay invisible
+  slots.forEach((s, i) => {
+    if (s.active) return;
+    dummy.scale.set(0, 0, 0);
+    dummy.updateMatrix();
+    voxelMesh.setMatrixAt(i, dummy.matrix);
+  });
+  voxelMesh.instanceMatrix.needsUpdate = true;
+}
+
+// The page asks for a transform; only accept messages from our own origin
+window.addEventListener('message', (e) => {
+  if (e.origin !== location.origin || e.data?.type !== 'transform') return;
+  if (!startMorph(e.data.shape)) {
+    window.parent.postMessage({ type: 'transform-done', shape: currentShape }, location.origin);
+  }
+});
+
+// ---- Animate ----
+const clock = new THREE.Clock();
+let frameClock = 0;     // drives the frame gradients; runs faster during a transform
+let frameTurn = 0;      // quarter turns the frames have completed
+renderer.setAnimationLoop(() => {
+  const dt = Math.min(clock.getDelta(), 1 / 30);
+  const t = clock.elapsedTime;
+  updateVoxels(dt, t);
+
+  // During a transform the frames make a quarter turn in opposite directions and their colours race
+  let turn = 0, pulse = 0;
+  if (morph) {
+    const k = clamp((t - morph.start) / (morph.end - morph.start), 0, 1);
+    turn = easeInOut(k);
+    pulse = Math.sin(Math.PI * k);
+  }
+  frameClock += dt * (1 + pulse * 6);
+  topFrame.rotation.y = (frameTurn + turn) * Math.PI / 2;
+  bottomFrame.rotation.y = -(frameTurn + turn) * Math.PI / 2;
+  topFrame.position.y = TOP_Y + Math.sin(t * 0.9) * 0.18 + pulse * 0.35;
+  bottomFrame.position.y = BOTTOM_Y + Math.sin(t * 0.9 + Math.PI) * 0.18 - pulse * 0.35;
+  topFrame.material.uniforms.uTime.value = frameClock;
+  bottomFrame.material.uniforms.uTime.value = frameClock;
+  renderer.render(scene, camera);
+});
+
+// Press "s" to save a PNG of the current frame
+window.addEventListener('keydown', (e) => {
+  if (e.key !== 's') return;
+  const a = document.createElement('a');
+  a.download = 'portal.png';
+  a.href = renderer.domElement.toDataURL('image/png');
+  a.click();
+});
+</script>
+</body>
+</html>
