@@ -4,6 +4,9 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Choose an Object</title>
+  <!-- Start fetching the 3D library straight away, in parallel with the page; the portal reuses it -->
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+  <link rel="modulepreload" href="https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.min.js" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Patrick+Hand&display=swap" rel="stylesheet" />
@@ -245,8 +248,11 @@
       tile.dataset.id = obj.id;
       tile.setAttribute('aria-label', obj.label);
       const img = document.createElement('img');
-      img.src = `assets/${obj.id}.png`;
+      img.src = `assets/${obj.id}.png?v=2`;   // bump when the images change so browsers skip stale copies
       img.alt = '';
+      img.width = 288;                 // intrinsic size hint; CSS sets the displayed size
+      img.decoding = 'async';          // decode off the main thread so the portal keeps animating
+      if (i >= 10) img.loading = 'lazy'; // tiles scrolled out of view on phones load when needed
       // Percentages of the 96px tile, so the art scales with the tile on small screens
       const left = obj.left ?? 48 - obj.w / 2 + (obj.dx ?? 0);
       const top = obj.top ?? 48 - obj.h / 2 + (obj.dy ?? 0);
